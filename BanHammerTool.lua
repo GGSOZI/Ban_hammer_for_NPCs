@@ -47,7 +47,6 @@ local FALL_TIME = 0.18
 local VOID_DISTANCE = 3000
 local OWNERSHIP_CHECK = false
 local OWNER_AGE_LIMIT = 0.1
-local DEBUG_OWNERSHIP = true
 local HOP_HEIGHT = 2.5
 local HOP_TIME = 0.08
 local SIM_RADIUS = 100
@@ -727,12 +726,40 @@ local function CenterOf(target)
 end
 
 local function CollectParts(target)
-	local list = {}
-	if target:IsA("BasePart") then list[1] = target end
+	local list, added = {}, {}
+	local function add(p)
+		if not added[p] then
+			added[p] = true
+			list[#list + 1] = p
+		end
+	end
+	if target:IsA("BasePart") then
+		add(target)
+		-- welded / jointed pieces move together with the target, so ghost them too
+		local ok, connected = pcall(function() return target:GetConnectedParts(true) end)
+		if ok then
+			for _, p in ipairs(connected) do add(p) end
+		end
+	end
 	for _, d in ipairs(target:GetDescendants()) do
-		if d:IsA("BasePart") then list[#list + 1] = d end
+		if d:IsA("BasePart") then add(d) end
 	end
 	return list
+end
+
+-- true if this part (or anything welded/jointed to it) is an Anchored part
+-- that is NOT inside `ownerModel`. Spinning such a thing would drag the map with it.
+local function IsPinnedToWorld(part, ownerModel)
+	local function outside(p)
+		return p.Anchored and not (ownerModel and p:IsDescendantOf(ownerModel))
+	end
+	if outside(part) then return true end
+	local ok, connected = pcall(function() return part:GetConnectedParts(true) end)
+	if not ok then return false end
+	for _, p in ipairs(connected) do
+		if outside(p) then return true end
+	end
+	return false
 end
 
 local function FindTarget(part)
@@ -740,6 +767,7 @@ local function FindTarget(part)
 	while m do
 		if m:FindFirstChildOfClass("Humanoid") then
 			if Players:GetPlayerFromCharacter(m) then return nil end
+			if IsPinnedToWorld(part, m) then return nil end
 			return m
 		end
 		local par = m.Parent
@@ -749,8 +777,8 @@ local function FindTarget(part)
 			m = par and par:FindFirstAncestorOfClass("Model") or nil
 		end
 	end
-	if not part.Anchored then return part end
-	return nil
+	if part.Anchored or IsPinnedToWorld(part, nil) then return nil end
+	return part.AssemblyRootPart or part
 end
 
 local function SendToVoid(target)
@@ -790,10 +818,6 @@ local function SendToVoid(target)
 			owned = maxAge < OWNER_AGE_LIMIT
 		else
 			owned = false
-		end
-		if DEBUG_OWNERSHIP then
-			print(string.format("[BanHammer] %s owned=%s maxReceiveAge=%.4f api=%d/%d",
-				target.Name, tostring(owned), maxAge, apiYes, apiNo))
 		end
 		return owned
 	end
